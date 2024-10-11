@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/blocto/solana-go-sdk/rpc"
 	ag_solanago "github.com/gagliardetto/solana-go"
 	"github.com/mr-tron/base58"
 	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"solana-openbook-scanner/openbook_v2"
 )
 
@@ -20,7 +22,7 @@ type BlockProcessor interface {
 }
 
 type BlockProcessorAdmin interface {
-	run(ctx context.Context)
+	run(ctx context.Context, wg *sync.WaitGroup)
 }
 
 type blockProcessorAdmin struct {
@@ -28,25 +30,34 @@ type blockProcessorAdmin struct {
 	processors []BlockProcessor
 }
 
-func (b *blockProcessorAdmin) run(ctx context.Context) {
+func (b *blockProcessorAdmin) run(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+	defer func() {
+		for _, processor := range b.processors {
+			processor.done()
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 
-		default:
-			for block := range b.blockCh {
-				for _, processor := range b.processors {
-					err := processor.process(block)
-					if err != nil {
-						Logger.Error(fmt.Sprintf("%s process block:%d failed", processor.name(), block.BlockHeight))
-						// TODO exit
-					}
+		case block := <-b.blockCh:
+			if block == nil {
+				Logger.Info("blockCh @ done")
+				return
+			}
+
+			for _, processor := range b.processors {
+				err := processor.process(block)
+				if err != nil {
+					Logger.Error(fmt.Sprintf("%s process block:%d failed", processor.name(), block.BlockHeight))
+					return
 				}
 			}
 		}
 	}
-
 }
 
 func NewBlockProcessorAdmin(blockCh chan *rpc.GetBlock, txRawChan chan string, ixRawChan chan string, ixIndexCh chan bson.M, ixCh chan bson.M) BlockProcessorAdmin {
@@ -138,7 +149,7 @@ const (
 func (bpp *BlockProcessorParser) process(block *rpc.GetBlock) error {
 	for _, tx := range block.Transactions {
 		if tx.Meta.Err != nil {
-			Logger.Info(fmt.Sprintf("skip failed tx Signatures:%v", tx.Transaction.Signatures))
+			//Logger.Info(fmt.Sprintf("skip failed tx Signatures:%v", tx.Transaction.Signatures))
 			continue
 		}
 
@@ -168,6 +179,7 @@ func (bpp *BlockProcessorParser) process(block *rpc.GetBlock) error {
 					// TODO exit
 				}
 				bpp.txRawChan <- string(txJson)
+				bpp.ixRawChan <- string(ixJson)
 
 				var accounts []*ag_solanago.AccountMeta
 				for _, account := range ixF.Accounts {

@@ -3,17 +3,23 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/blocto/solana-go-sdk/rpc"
+	"sync"
 	"time"
+
+	"github.com/blocto/solana-go-sdk/rpc"
+
+	"solana-openbook-scanner/block_slot_manager"
 )
 
 type BlockGetter struct {
-	cli rpc.RpcClient
+	workerCnt int
+	cli       rpc.RpcClient
+	bhm       block_slot_manager.BlockSlotManager
 }
 
 const (
-	rpcEndpoint = "https://api.mainnet-beta.solana.com"
-	Delay       = time.Millisecond * 1000
+	SolanaRpcEndpoint = "https://api.mainnet-beta.solana.com"
+	Delay             = time.Millisecond * 1000
 )
 
 var (
@@ -28,9 +34,9 @@ var (
 	}
 )
 
-func NewBlockGetter() *BlockGetter {
-	cli := rpc.NewRpcClient(rpcEndpoint)
-	return &BlockGetter{cli: cli}
+func NewBlockGetter(workerCnt int, bhm block_slot_manager.BlockSlotManager) *BlockGetter {
+	cli := rpc.NewRpcClient(SolanaRpcEndpoint)
+	return &BlockGetter{workerCnt: workerCnt, cli: cli, bhm: bhm}
 }
 
 func (bg *BlockGetter) GetBlock(slot uint64) (b *rpc.GetBlock, err error) {
@@ -49,14 +55,27 @@ func (bg *BlockGetter) GetBlock(slot uint64) (b *rpc.GetBlock, err error) {
 	return resp.Result, nil
 }
 
-func (bg *BlockGetter) run(ctx context.Context, taskCh chan uint64, blockCh chan *rpc.GetBlock) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
+func (bg *BlockGetter) run(ctx context.Context, wg *sync.WaitGroup, taskCh chan uint64, blockCh chan *rpc.GetBlock) {
+	defer wg.Done()
+	defer close(blockCh)
 
-		default:
-			for height := range taskCh {
+	var wgWorker sync.WaitGroup
+	wgWorker.Add(bg.workerCnt)
+
+	worker := func(id int) {
+		defer wgWorker.Done()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+
+			case height := <-taskCh:
+				if height == 0 {
+					Logger.Info(fmt.Sprintf("worker:%d all task finish", id))
+					return
+				}
+
 				Logger.Info(fmt.Sprintf("GetBlock:%d start", height))
 				failCnt := 0
 				for {
@@ -67,21 +86,28 @@ func (bg *BlockGetter) run(ctx context.Context, taskCh chan uint64, blockCh chan
 						Logger.Info(fmt.Sprintf("GetBlock:%d failed:%d", height, failCnt))
 						continue
 					}
-					blockCh <- b
+
+					for {
+						Logger.Debug(fmt.Sprintf("ParentSlot:%d, height:%d", b.ParentSlot, *b.BlockHeight))
+						if bg.bhm.CanCommit(b.ParentSlot) {
+							blockCh <- b
+							bg.bhm.Commit(uint64(b.ParentSlot + 1))
+							break
+						}
+						time.Sleep(time.Millisecond * 100)
+					}
 					break
 				}
 				Logger.Info(fmt.Sprintf("GetBlock:%d succeed", height))
 			}
 		}
 	}
-}
 
-func (bg *BlockGetter) keepGenerateTaskMock(startHeight uint64, count uint64, taskCh chan uint64) {
-	start := startHeight
-	end := startHeight + count
-	for start < end {
-		taskCh <- start
-		start += 1
+	for i := 0; i < bg.workerCnt; i++ {
+		go worker(i)
 	}
-	close(taskCh)
+
+	Logger.Info("wait all workers done")
+	wgWorker.Wait()
+	Logger.Info("all workers done")
 }

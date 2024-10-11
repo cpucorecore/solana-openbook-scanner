@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"sync"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -10,9 +12,9 @@ import (
 )
 
 type MongoAttendant struct {
-	client    *mongo.Client
-	txRawChan chan string
-	ixRawChan chan string
+	cli       *mongo.Client
+	txRawCh   chan string
+	ixRawCh   chan string
 	ixIndexCh chan bson.M
 	ixCh      chan bson.M
 }
@@ -33,41 +35,112 @@ func NewMongoAttendant(txRawChan chan string, ixRawChan chan string, ixIndexCh c
 	}
 
 	return &MongoAttendant{
-		client:    client,
-		txRawChan: txRawChan,
-		ixRawChan: ixRawChan,
+		cli:       client,
+		txRawCh:   txRawChan,
+		ixRawCh:   ixRawChan,
 		ixIndexCh: ixIndexCh,
 		ixCh:      ixCh,
 	}
 }
 
-func (ma *MongoAttendant) serve(ctx context.Context) {
-	go ma.serveTxRaw(ctx)
-	go ma.serveIxRaw(ctx)
-	go ma.serveIxIndex(ctx)
-	go ma.serveIx(ctx)
+func (ma *MongoAttendant) startServe(ctx context.Context, wg *sync.WaitGroup) {
+	wg.Add(1)
+	go ma.serveTxRaw(ctx, wg)
+
+	wg.Add(1)
+	go ma.serveIxRaw(ctx, wg)
+
+	wg.Add(1)
+	go ma.serveIxIndex(ctx, wg)
+
+	wg.Add(1)
+	go ma.serveIx(ctx, wg)
 }
 
-func (ma *MongoAttendant) serveTxRaw(ctx context.Context) {
-	for txRaw := range ma.txRawChan {
-		ma.client.Database(Database).Collection(CollectionTxRaw).InsertOne(ctx, txRaw)
+func (ma *MongoAttendant) serveTxRaw(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case txRaw := <-ma.txRawCh:
+			if txRaw == "" {
+				Logger.Info("txRawCh @ done")
+				return
+			}
+
+			_, err := ma.cli.Database(Database).Collection(CollectionTxRaw).InsertOne(ctx, bson.M{"d": txRaw})
+			if err != nil {
+				Logger.Error(fmt.Sprintf("insert tx raw err:%s", err.Error()))
+			}
+		}
 	}
 }
 
-func (ma *MongoAttendant) serveIxRaw(ctx context.Context) {
-	for ixRaw := range ma.ixRawChan {
-		ma.client.Database(Database).Collection(CollectionIxRaw).InsertOne(ctx, ixRaw)
+func (ma *MongoAttendant) serveIxRaw(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case ixRaw := <-ma.ixRawCh:
+			if ixRaw == "" {
+				Logger.Info("ixRawCh @ done")
+				return
+			}
+
+			_, err := ma.cli.Database(Database).Collection(CollectionIxRaw).InsertOne(ctx, bson.M{"d": ixRaw})
+			if err != nil {
+				Logger.Error(fmt.Sprintf("insert ix raw err:%s", err.Error()))
+			}
+		}
 	}
 }
 
-func (ma *MongoAttendant) serveIxIndex(ctx context.Context) {
-	for ixIndex := range ma.ixIndexCh {
-		ma.client.Database(Database).Collection(CollectionIxIndex).InsertOne(ctx, ixIndex)
+func (ma *MongoAttendant) serveIxIndex(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case ixIndex := <-ma.ixIndexCh:
+			if ixIndex == nil {
+				Logger.Info("ixIndexCh @ done")
+				return
+			}
+
+			_, err := ma.cli.Database(Database).Collection(CollectionIxIndex).InsertOne(ctx, ixIndex)
+			if err != nil {
+				Logger.Error(fmt.Sprintf("insert ix index err:%s", err.Error()))
+			}
+		}
 	}
 }
 
-func (ma *MongoAttendant) serveIx(ctx context.Context) {
-	for ix := range ma.ixCh {
-		ma.client.Database(Database).Collection(CollectionIx).InsertOne(ctx, ix)
+func (ma *MongoAttendant) serveIx(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case ix := <-ma.ixCh:
+			if ix == nil {
+				Logger.Info("ixCh @ done")
+				return
+			}
+
+			_, err := ma.cli.Database(Database).Collection(CollectionIx).InsertOne(ctx, ix)
+			if err != nil {
+				Logger.Error(fmt.Sprintf("insert ix err:%s", err.Error()))
+			}
+		}
 	}
 }
