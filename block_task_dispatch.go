@@ -15,11 +15,11 @@ func NewBlockTaskDispatch() *BlockTaskDispatch {
 	return &BlockTaskDispatch{cli: cli}
 }
 
-func (btd *BlockTaskDispatch) keepDispatchTaskMock(wg *sync.WaitGroup, startHeight uint64, count uint64, taskCh chan uint64) {
+func (btd *BlockTaskDispatch) keepDispatchTaskMock(wg *sync.WaitGroup, startSlot uint64, count uint64, taskCh chan uint64) {
 	defer wg.Done()
 
-	start := startHeight
-	end := startHeight + count
+	start := startSlot
+	end := startSlot + count
 	for start < end {
 		taskCh <- start
 		start += 1

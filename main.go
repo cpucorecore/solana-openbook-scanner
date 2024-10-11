@@ -7,42 +7,45 @@ import (
 	"github.com/blocto/solana-go-sdk/rpc"
 	"go.mongodb.org/mongo-driver/v2/bson"
 
-	"solana-openbook-scanner/block_slot_manager"
+	"solana-openbook-scanner/block_height_manager"
 )
 
 const (
 	ConfigBlockGetterWorkerCnt = 3
-	ConfigStartHeight          = uint64(294577906)
+	ConfigStartSlot            = uint64(294577906) //294577906
 )
 
 func main() {
-	bhm := block_slot_manager.NewBlockSlotManager(ConfigStartHeight)
-
 	taskCh := make(chan uint64, 1000)
+
 	blockCh := make(chan *rpc.GetBlock, 100)
+
 	txRawCh := make(chan string, 100)
 	ixRawCh := make(chan string, 100)
 	ixIndexCh := make(chan bson.M, 100)
 	ixCh := make(chan bson.M, 100)
 
 	ctx := context.Background()
-
 	var wg sync.WaitGroup
 
-	mga := NewMongoAttendant(txRawCh, ixRawCh, ixIndexCh, ixCh)
-	mga.startServe(ctx, &wg)
+	mongo := NewMongoAttendant(txRawCh, ixRawCh, ixIndexCh, ixCh)
+	mongo.startServe(ctx, &wg)
 
 	blockProcessor := NewBlockProcessorAdmin(blockCh, txRawCh, ixRawCh, ixIndexCh, ixCh)
 	wg.Add(1)
 	go blockProcessor.run(ctx, &wg)
 
+	bhm := block_height_manager.NewBlockHeightManager()
 	blockGetter := NewBlockGetter(ConfigBlockGetterWorkerCnt, bhm)
+	startBlockHeight := blockGetter.getBlockHeightBySlot(ConfigStartSlot)
+	bhm.Init(startBlockHeight - 1)
+
 	wg.Add(1)
 	go blockGetter.run(ctx, &wg, taskCh, blockCh)
 
 	taskDispatch := NewBlockTaskDispatch()
 	wg.Add(1)
-	go taskDispatch.keepDispatchTaskMock(&wg, ConfigStartHeight, 5, taskCh)
+	go taskDispatch.keepDispatchTaskMock(&wg, ConfigStartSlot, 2000, taskCh)
 
 	Logger.Info("wait all goroutine done")
 	wg.Wait()
