@@ -1,19 +1,31 @@
 package main
 
 import (
-	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
-	"log"
+	"context"
+	"github.com/blocto/solana-go-sdk/rpc"
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 func main() {
-	startSlot := uint64(294577906)
+	startHeight := uint64(294577906) //294577923
+	//bhm := block_height_manager.NewBlockHeightManager(startHeight)
 
-	client, err := mongo.Connect(options.Client().ApplyURI("mongodb://localhost:27017"))
-	if err != nil {
-		log.Fatal(err)
-	}
-	rpcEndpoint := "https://api.mainnet-beta.solana.com"
-	worker := NewWorker(rpcEndpoint, client)
-	worker.getBlock(startSlot)
+	taskCh := make(chan uint64, 1000)
+	blockCh := make(chan *rpc.GetBlock, 100)
+	txRawCh := make(chan string, 100)
+	ixRawCh := make(chan string, 100)
+	ixIndexCh := make(chan bson.M, 100)
+	ixCh := make(chan bson.M, 100)
+
+	ctx := context.Background()
+
+	attendant := NewMongoAttendant(txRawCh, ixRawCh, ixIndexCh, ixCh)
+	go attendant.serve(ctx)
+
+	blockProcessor := NewBlockProcessorAdmin(blockCh, txRawCh, ixRawCh, ixIndexCh, ixCh)
+	go blockProcessor.run(ctx)
+
+	blockGetter := NewBlockGetter()
+	go blockGetter.keepGenerateTaskMock(startHeight, 10, taskCh)
+	blockGetter.run(ctx, taskCh, blockCh)
 }
